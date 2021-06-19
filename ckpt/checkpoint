@@ -1,0 +1,2 @@
+model_checkpoint_path: "round2_18_18_mix_2_v6_1_d64.ckpt"
+all_model_checkpoint_paths: "round2_18_18_mix_2_v6_1_d64.ckpt"
