@@ -304,7 +304,6 @@ class DnnRunDistanceStrategy(_BaseStrategy):
 
 class RunDistanceStrategy(_BaseStrategy):
     def __init__(self,
-            maxDepth=4,
             timeThresForCalcReward=10.2,
             prohibitDecreasingGoalDistance=True,
             prohibitDecreasingSpeed=True,
@@ -312,7 +311,6 @@ class RunDistanceStrategy(_BaseStrategy):
         ):
         super().__init__()
         self.batchCalcOnly=False
-        self.maxDepth=maxDepth
         self.timeThresForCalcReward=timeThresForCalcReward
         self.prohibitDecreasingGoalDistance=prohibitDecreasingGoalDistance
         self.prohibitDecreasingSpeed=prohibitDecreasingSpeed
@@ -330,7 +328,6 @@ class RunDistanceStrategy(_BaseStrategy):
         reward=tracer.createPhaseToRunDistanceDict(
             interId,
             self.timeThresForCalcReward,
-            maxDepth=self.maxDepth,
             prohibitDecreasingGoalDistance=self.prohibitDecreasingGoalDistance,
             prohibitDecreasingSpeed=self.prohibitDecreasingSpeed,
             debug=debug
@@ -340,86 +337,3 @@ class RunDistanceStrategy(_BaseStrategy):
             phase:round(x,1)
                 for phase,x in reward.items()
         } #ランダム要素をなくす為に1桁に丸める
-
-class NumVehicleStrategy(_BaseStrategy):
-    def __init__(self,
-            metric,
-            maxDepth=1,
-            timeThresForCalcReward=10,
-            numVehicleThresForKeepPhase=None,
-            timeThresForKeepPhase=5,
-        ):
-        super().__init__()
-        self.batchCalcOnly=False
-        self.metric=metric
-        self.maxDepth=maxDepth
-        self.timeThresForCalcReward=timeThresForCalcReward
-        self.numVehicleThresForKeepPhase=numVehicleThresForKeepPhase
-        self.timeThresForKeepPhase=timeThresForKeepPhase
-
-    def getName(self):
-        return "num_vehicle"
-        
-    @staticmethod
-    def sumDict(dictList):
-        keys=list(dictList[0].keys())
-        return {
-            key: sum([dic[key] for dic in dictList])
-                for key in keys
-        }
-    
-    def calcReward(self,observations,interId,debug=False):
-        
-        def _calcReward(phaseToDirectionListDict,inverse=False):
-            phaseToNumVehicleDict=self._countNumVehicles(
-                observations,
-                interId,
-                self.timeThresForCalcReward,
-                phaseToDirectionListDict,
-                debug=debug
-            )
-            if inverse:
-                return {key:-val for key,val in phaseToNumVehicleDict.items()}
-            else:
-                return phaseToNumVehicleDict
-            
-        signalState=self.worldSignalState.signalStateDict[interId]
-        if self.metric=="maximize_pass":
-            return _calcReward(SignalState.phaseToPassableDirectionListDictExceptRightTurn)
-        elif self.metric=="minimize_stop":
-            return _calcReward(SignalState.phaseToStopDirectionListDict,True)
-        elif self.metric=="maximize_pass-stop":
-            return self.sumDict([
-                _calcReward(SignalState.phaseToPassableDirectionListDictExceptRightTurn),
-                _calcReward(SignalState.phaseToStopDirectionListDict,True)
-            ])
-        else:
-            raise Exception("not supported strategy")        
-        
-    def _countNumVehicles(self,
-            observations,
-            interId,
-            limit_time,
-            phaseToDirectionListDict,
-            debug=False
-        ):
-        if limit_time is None:
-            lane_vehicle_num = observations.interIdToObservationDict[interId]["lane_vehicle_num"]
-        else:
-            tracer=RoadTracer(
-                self.worldSignalState,
-                observations.vehicleDS,
-                self.roadNet.intersectionDataSet.signalDict,
-                self.roadNet.roadDataSet,
-            )
-            lane_vehicle_num = tracer.calcNumVehicleOnLane(
-                interId,
-                limit_time,
-                maxDepth=self.maxDepth,
-                debug=debug,
-                insertZeroIndex=True
-            )
-        return LaneVehicleNumCalc.createPhaseToNumVehicelsDictFromNumVehicleOnLane(
-            lane_vehicle_num,
-            phaseToDirectionListDict
-        )

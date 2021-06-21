@@ -153,7 +153,6 @@ class DataSetCreationActionSolver(_BaseActionSolver):
             strategy=None,
         ):
         super().__init__()
-        self.includePrevRoadForInbound=True
 
         if strategy is not None:
             self.strategyRunner=StrategyRunner(strategy)
@@ -180,30 +179,11 @@ class DataSetCreationActionSolver(_BaseActionSolver):
     def getBufferLength(self):
         return len(self.exampleList)
     
-    def _calcAverageTravelTimeInbound(self,tracer,interId):
-        vehicleAverageTotalRouteLength=tracer.calcAverageTravelTimeInboundLane(
-            interId,
-            self.numSegmentInbound,
-            self.segmentLength,
-            includePrevRoad=self.includePrevRoadForInbound,
-        )
-        return vehicleAverageTotalRouteLength
-    
-    def _calcAverageTotalRouteLengthInbound(self,tracer,interId):
-        vehicleAverageTotalRouteLength=tracer.calcAverageTotalRouteLengthInboundLane(
-            interId,
-            self.numSegmentInbound,
-            self.segmentLength,
-            includePrevRoad=self.includePrevRoadForInbound,
-        )
-        return vehicleAverageTotalRouteLength
-    
     def _calcVehicleNumAndSpeedInbound(self,tracer,interId):
         vehicleNum,vehicleSpeed=tracer.calcVehicleNumAndSpeedOnSegmentedInboundLane(
             interId,
             self.numSegmentInbound,
             self.segmentLength,
-            includePrevRoad=self.includePrevRoadForInbound,
         )
         return vehicleNum,vehicleSpeed
     def _calcVehicleNumAndSpeedOutbound(self,tracer,interId):
@@ -229,9 +209,6 @@ class DataSetCreationActionSolver(_BaseActionSolver):
         
         prev2VehicleNumInbound,prev2VehicleSpeedInbound=self._calcVehicleNumAndSpeedInbound(prev2Tracer,interId)
         prev2VehicleNumOutbound,prev2VehicleSpeedOutbound=self._calcVehicleNumAndSpeedOutbound(prev2Tracer,interId)
-
-        #prev2VehicleAverageTotalRouteLengthInbound=self._calcAverageTotalRouteLengthInbound(prev2Tracer,interId)
-        prev2VehicleAverageTravelTimeInbound=self._calcAverageTravelTimeInbound(prev2Tracer,interId)
                 
         normalizedRoadLengthInbound=tracer.getRelativeRoadLengthList(interId,self.segmentLength,"inbound")
         normalizedRoadLengthOutbound=tracer.getRelativeRoadLengthList(interId,self.segmentLength,"outbound")

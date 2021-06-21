@@ -75,6 +75,7 @@ def exportJsonForVisualization(
     print("------ all done")    
     
 def showDelayIndex(simulator_cfg_file,tqdm=None):
+    #using route
     configs=Simulator.readConfig(simulator_cfg_file)
     roadNet=RoadNet.createFromRoadNetFile(configs['road_file_addr'])
     vehicleDataSetTimeSeries = VehicleDataSetTimeSeries.fromEnvLogDir(
