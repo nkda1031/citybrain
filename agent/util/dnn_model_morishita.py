@@ -1,6 +1,7 @@
 import math
 import random
 import copy
+import itertools
 
 import numpy as np
 import tensorflow as tf
@@ -70,42 +71,33 @@ class SavedRunDistanceModel():
                 _eSumRunDist2Batch = self.imported_func(inputs[i*BATCH:(i+1)*BATCH,:])[self.outputName]
                 phaseProb = tf.nn.softmax(_eSumRunDist2Batch,axis=1) #shape = [BATCH,8,1]
                 phaseProbList.append(phaseProb[:,:,0])
+
             phaseProbAll=tf.concat(phaseProbList,axis=0)# shape = [NumInterId,8]        
             return phaseProbAll.numpy(),interIds
-        
+
 class RunDistanceDataSetDecoder:
-    def __init__(self,
-            numSegmentInbound = 9,
-            numSegmentOutbound = 9,
-        ):
+    def __init__(self, sectionNum):
         self.feature_description = {
-            'oldPhase': tf.io.FixedLenFeature([], tf.int64),
-            'action': tf.io.FixedLenFeature([], tf.int64),
-            'nextAction': tf.io.FixedLenFeature([], tf.int64),
-            'interSignalized': tf.io.FixedLenFeature([4], tf.int64),
-            'normalizedRoadLengthInbound': tf.io.FixedLenFeature([4], tf.float32),
-            'normalizedRoadLengthOutbound': tf.io.FixedLenFeature([4], tf.float32),
-            'roadSpeedLimitInbound': tf.io.FixedLenFeature([4], tf.float32),
-            'roadSpeedLimitOutbound': tf.io.FixedLenFeature([4], tf.float32),
-            'vehicleNumInbound': tf.io.FixedLenFeature([12*numSegmentInbound], tf.int64),
-            'vehicleSpeedInbound': tf.io.FixedLenFeature([12*numSegmentInbound], tf.float32),
-            'vehicleNumOutbound': tf.io.FixedLenFeature([4*numSegmentOutbound], tf.int64),
-            'vehicleSpeedOutbound': tf.io.FixedLenFeature([4*numSegmentOutbound], tf.float32),
-            'nextVehicleNumInbound': tf.io.FixedLenFeature([12*numSegmentInbound], tf.int64),
-            'nextVehicleSpeedInbound': tf.io.FixedLenFeature([12*numSegmentInbound], tf.float32),
-            'nextVehicleNumOutbound': tf.io.FixedLenFeature([4*numSegmentOutbound], tf.int64),
-            'nextVehicleSpeedOutbound': tf.io.FixedLenFeature([4*numSegmentOutbound], tf.float32),
-            'vehicleSumRunDistance1': tf.io.FixedLenFeature([], tf.float32),
-            'vehicleSumRunDistance2': tf.io.FixedLenFeature([], tf.float32),
+            'startPhase': tf.io.FixedLenFeature([8*9], tf.int64),                     # road1~8 x 9dim one-hot
+            'endPhase': tf.io.FixedLenFeature([8*9], tf.int64),                       # road1~8 x 9dim one-hot
+            'startIntersectionPos': tf.io.FixedLenFeature([8*5], tf.int64),           # road1~8 x 5dim one-hot
+            'endIntersectionPos': tf.io.FixedLenFeature([8*5], tf.int64),             # road1~8 x 5dim one-hot
+            'speedLimit': tf.io.FixedLenFeature([8*1], tf.float32),                   # road1~8 (x float)
+            'permissibleMove': tf.io.FixedLenFeature([8*3*3], tf.int64),              # lane1~24 x 3dim
+            'stackingVehicles': tf.io.FixedLenFeature([8*3*1], tf.int64),             # lane1~24 x 1
+            'stackingVehiclesSpeed': tf.io.FixedLenFeature([8*3*1], tf.float32),      # lane1~24 x 1
+            'vehiclesInfo': tf.io.FixedLenFeature([8*3*sectionNum*4], tf.float32),    # lane1~24 x ceil(max_len/5) x 4
+            'nextPhase': tf.io.FixedLenFeature([9], tf.int64),                        # 9dim one-hot
+            'totalTravelDistance': tf.io.FixedLenFeature([], tf.float32)              # (float)
         }
-        
-    def load(self,tfrecordPath):
+
+    def load(self, tfrecordPath):
         def _parse(example_proto):
             parsed_dataset = tf.io.parse_single_example(example_proto, self.feature_description)
             
             keepingAction= 1. if parsed_dataset['action']==parsed_dataset['nextAction'] else 0.
             
-            x=tf.concat([
+            x = tf.concat([
                 tf.cast(parsed_dataset['interSignalized'],tf.float32),
                 tf.cast(parsed_dataset['vehicleNumInbound'],tf.float32),
                 parsed_dataset['vehicleSpeedInbound'],
@@ -119,7 +111,7 @@ class RunDistanceDataSetDecoder:
                 tf.expand_dims(tf.cast(parsed_dataset['action'],tf.float32),axis=0),
                 tf.expand_dims(tf.cast(keepingAction,tf.float32),axis=0),
             ],axis=0)
-            y=tf.concat([
+            y = tf.concat([
                 tf.cast(parsed_dataset['nextVehicleNumOutbound'],tf.float32),
                 parsed_dataset['nextVehicleSpeedOutbound'],
                 tf.expand_dims(parsed_dataset['vehicleSumRunDistance1']*RUN_DISTANCE_SCALER,axis=0),
@@ -129,14 +121,14 @@ class RunDistanceDataSetDecoder:
         
         raw_dataset = tf.data.TFRecordDataset(tfrecordPath)
         return raw_dataset.map(_parse)
-    
+
 def _float_feature(value):
     """float / double 型から float_list を返す"""
     if isinstance(value,list):
         return tf.train.Feature(float_list=tf.train.FloatList(value=value))
     else:
         return tf.train.Feature(float_list=tf.train.FloatList(value=[value]))
-    
+
 def _int64_feature(value):
     """bool / enum / int / uint 型から Int64_list を返す"""
     if isinstance(value,list):
@@ -146,27 +138,30 @@ def _int64_feature(value):
     
 class DataSetCreationActionSolver(_BaseActionSolver):
     def __init__(self,
-            numSegmentInbound = 9,
-            numSegmentOutbound = 9,
-            segmentLength = 25,
             strategy=None,
         ):
         super().__init__()
-        
+        #self.includePrevRoadForInbound=True
+
         if strategy is not None:
             self.strategyRunner=StrategyRunner(strategy)
         self.strategy=strategy
         self.exampleList=[]
         self.prevWorldSignalState=None
         
-        self.numSegmentInbound = numSegmentInbound
-        self.numSegmentOutbound = numSegmentOutbound
-        self.segmentLength = segmentLength
+        self.max_laneNum = 0
+        self.sectionLen = 5.0
+        self.sectionNum = 0
+        self.inter2roads = {}
+        self.agentStaticInfo = {}
+        self.road2vehicles = {}
     
     def setRoadNet(self,roadNet):
         self.roadNet=roadNet
         if self.strategy is not None:
             self.strategy.setRoadNet(roadNet)
+            
+        self._createStaticExample()
         
     def startFirstEpisode(self,signalizedInterIdList):
         if self.strategy is not None:
@@ -178,25 +173,7 @@ class DataSetCreationActionSolver(_BaseActionSolver):
     def getBufferLength(self):
         return len(self.exampleList)
     
-    def _calcVehicleNumAndSpeedInbound(self,tracer,interId):
-        vehicleNum,vehicleSpeed=tracer.calcVehicleNumAndSpeedOnSegmentedInboundLane(
-            interId,
-            self.numSegmentInbound,
-            self.segmentLength,
-        )
-        return vehicleNum,vehicleSpeed
-    def _calcVehicleNumAndSpeedOutbound(self,tracer,interId):
-        vehicleNum,vehicleSpeed=tracer.calcVehicleNumAndSpeedOnSegmentedOutboundRoad(
-            interId,
-            self.numSegmentOutbound,
-            self.segmentLength
-        )
-        return vehicleNum,vehicleSpeed
-    
-    def _calcSumRunDistance(self,fromTracer,toTracer,interId,normalize=False):
-        return fromTracer.calcSumRunDistance(toTracer.vehicleDS,interId,self.segmentLength*self.numSegmentInbound,normalize=normalize)
-    
-    def _createExample(self,prev2Tracer,prevTracer,tracer,interId):
+    def _createExample_ref(self,prev2Tracer,prevTracer,tracer,interId):
         """
         interIdで指定する交差点周りの状況変化（車両）を記録するtf.Exampleを作成する
         """
@@ -208,9 +185,13 @@ class DataSetCreationActionSolver(_BaseActionSolver):
         
         prev2VehicleNumInbound,prev2VehicleSpeedInbound=self._calcVehicleNumAndSpeedInbound(prev2Tracer,interId)
         prev2VehicleNumOutbound,prev2VehicleSpeedOutbound=self._calcVehicleNumAndSpeedOutbound(prev2Tracer,interId)
+
+        #prev2VehicleAverageTotalRouteLengthInbound=self._calcAverageTotalRouteLengthInbound(prev2Tracer,interId)
+        prev2VehicleAverageTravelTimeInbound=self._calcAverageTravelTimeInbound(prev2Tracer,interId)
                 
         normalizedRoadLengthInbound=tracer.getRelativeRoadLengthList(interId,self.segmentLength,"inbound")
         normalizedRoadLengthOutbound=tracer.getRelativeRoadLengthList(interId,self.segmentLength,"outbound")
+
         roadSpeedLimitInbound=tracer.getRoadSpeedLimitList(interId,"inbound")
         roadSpeedLimitOutbound=tracer.getRoadSpeedLimitList(interId,"outbound")
         
@@ -246,7 +227,181 @@ class DataSetCreationActionSolver(_BaseActionSolver):
           'vehicleSumRunDistance2': _float_feature(vehicleSumRunDistance2),
         }
         example = tf.train.Example(features=tf.train.Features(feature=feature))
+        return exampletf.train.Example
+    
+    def _createExample(self, prevTracer, tracer, interID):
+        """
+        interIdで指定する交差点周りの状況変化（車両）を記録するtf.Exampleを作成する
+        """
+        # 交差点の変動情報収集
+        nextPhase = tracer.worldSignalState.signalStateDict[interID]
+        startPhase = [0]*8 # 0:信号無し, 1-8:phase
+        endPhase = [0]*8
+        for idx, roadID in enumerate(self.inter2roads['agents'][interID]):
+            if roadID == -1:
+                continue
+            startInterID = self.roadNet.roadDataSet.roadDict[roadID].getStartInterId()
+            if startInterID in self.inter2roads['agents'].keys():
+                startPhase[idx] = prevTracer.worldSignalState.signalStateDict[startInterID]
+            endInterID = self.roadNet.roadDataSet.roadDict[roadID].getEndInterId()
+            if endInterID in self.inter2roads['agents'].keys():
+                endPhase[idx] = prevTracer.worldSignalState.signalStateDict[endInterID]
+            
+        def one_hot(raw, dim):
+            return [[1 if i == v else 0 for i in range(dim)] for v in raw]
+        
+        def flatten(list_of_list):
+            return list(itertools.chain.from_iterable(list_of_list))
+        
+        def aggregate(key):
+            return [self.road2vehicles[roadID][key] for roadID in self.inter2roads['agents'][interID]]
+
+        feature = {
+            'startPhase': _int64_feature(flatten(one_hot(startPhase, 9))),           # road1~8 x 9dim one-hot
+            'endPhase': _int64_feature(flatten(one_hot(endPhase, 9))),             # road1~8 x 9dim one-hot
+            'startIntersectionPos': _int64_feature(flatten(one_hot(self.agentStaticInfo[interID]['startIntersectionPos'], 5))), # road1~8 x 5dim one-hot
+            'endIntersectionPos': _int64_feature(flatten(one_hot(self.agentStaticInfo[interID]['endIntersectionPos'], 5))),   # road1~8 x 5dim one-hot
+            'speedLimit': _float_feature(self.agentStaticInfo[interID]['speedLimit']),           # road1~8 (x float)
+            'permissibleMove': _int64_feature(flatten(self.agentStaticInfo[interID]['permissibleMove'])),      # lane1~24 x 3dim
+            'stackingVehicles': _int64_feature(flatten(aggregate('stackingVehicles'))),     # lane1~24 x 1
+            'stackingVehiclesSpeed': _float_feature(flatten(aggregate('stackingVehiclesSpeed'))),     # lane1~24 x 1
+            'vehiclesInfo': _float_feature(flatten(flatten(flatten(aggregate('vehiclesInfo'))))),         # lane1~24 x ceil(max_len/5) x 4
+            'nextPhase': _int64_feature(flatten(one_hot([nextPhase], 9))),            # 9dim one-hot
+            'totalTravelDistance': _float_feature(sum(aggregate('totalTravelDistance')))  # (float)
+        }
+        example = tf.train.Example(features=tf.train.Features(feature=feature))
         return example
+    
+    def _createStaticExample(self):
+        cardDir = ['N', 'E', 'S', 'W', 'undefined']
+        def _replaceNone(value):
+            return value.roadId if value is not None else -1
+        
+        # 隣接道路の接続情報収集
+        self.inter2roads = {'agents':{}, 'non-agents':{}}
+        # inter2roads['agents'][interID]     = [No, Ni, Eo, Ei, So, Si, Wo, Wi]
+        # inter2roads['non-agents'][interID] = [Xo, Xi, Xo, Xi, Xo, Xi, Xo, Xi]
+        
+        for interID, interObj in self.roadNet.intersectionDataSet.intersectionDict.items():
+            if interObj.signal:
+                signalObj = self.roadNet.intersectionDataSet.signalDict[interID]
+                interRoadDict = [signalObj.outRoadDict, signalObj.inRoadDict]
+                self.inter2roads['agents'][interID] = [_replaceNone(interRoadDict[i%2][cardDir[int(i//2)]]) for i in range(8)]
+            else:
+                self.inter2roads['non-agents'][interID] = [-1]*8
+        
+        max_length = 0.0
+        for roadID, roadObj in self.roadNet.roadDataSet.roadDict.items():
+            roadDict = roadObj.exportAsDict()
+            # update max
+            max_length = max(max_length, roadObj.roadSegment.length)
+            self.max_laneNum = max(self.max_laneNum, roadObj.getNumLane())
+            
+            # update 'non-agents' inter2roads info
+            for i, key in enumerate(['startInterId', 'endInterId']):
+                interID = roadDict[key]
+                if interID in self.inter2roads['non-agents']:
+                    ioRoads = self.inter2roads['non-agents'][interID][i::2]
+                    self.inter2roads['non-agents'][interID][ioRoads.index(-1)*2+i] = roadID
+        
+        self.sectionNum = int(-((-max_length)//self.sectionLen))
+
+        # 隣接道路の固定情報収集
+        self.agentStaticInfo = {}
+        for interID, interObj in self.roadNet.intersectionDataSet.signalDict.items():
+            interPos = {'start':[4]*8, 'end':[4]*8} #0-3:NESW, 4:undefined
+            speedLimit = [0.0]*8
+            permissibleMove = []
+            for idx, roadID in enumerate(self.inter2roads['agents'][interID]):
+                if roadID == -1:
+                    permissibleMove.append([0, 0, 0]*self.max_laneNum)
+                else:
+                    roadDict = self.roadNet.roadDataSet.roadDict[roadID].exportAsDict()
+                    for edgeKey, edgeInterKey in [('start', 'startInterId'), ('end', 'endInterId')]:
+                        edgeInterID = roadDict[edgeInterKey]
+                        if edgeInterID in self.inter2roads['agents']:
+                            interPos[edgeKey][idx] = int(self.inter2roads['agents'][edgeInterID].index(roadID)//2)
+                    speedLimit[idx] = roadDict['speedLimit']
+                    permissibleMove.append(roadDict['permissibleMovementList'])
+            
+            self.agentStaticInfo[interID] = {
+                'startIntersectionPos': interPos['start'],
+                'endIntersectionPos': interPos['end'],
+                'speedLimit': speedLimit,
+                'permissibleMove': permissibleMove,
+            }
+            
+        return
+    
+    def _createExampleInit(self, prevTracer, tracer):
+        # 車両の変動情報の変換 (TODO:実行場所変える, インターごとでは無駄)
+        self.road2vehicles = {
+            roadID : {
+                 'vehiclesInfo': [
+                     [
+                         [min(max(roadObj.roadSegment.length-i*self.sectionLen, 0.0)/self.sectionLen, 1.0), 0, 0.0, 0.0] for i in range(self.sectionNum)
+                     ] for _ in range(self.max_laneNum)
+                 ],
+                 'stackingVehicles': [0]*self.max_laneNum,
+                 'stackingVehiclesSpeed': [0.0]*self.max_laneNum,
+                 'totalTravelDistance': 0.0
+                }
+            for roadID, roadObj in self.roadNet.roadDataSet.roadDict.items()
+        }
+                                               
+        def _getInterOutRoads(interID):
+            return [r for r in (self.inter2roads['agents'].get(interID, self.inter2roads['non-agents'].get(interID)))[::2] if r != -1]
+        
+        for vehicleID, vehicleObj in prevTracer.vehicleDS.existingVehicleDict.items():
+            if math.isclose(vehicleObj.distance, 0.0):
+                self.road2vehicles[vehicleObj.roadId]['stackingVehicles'][vehicleObj.lane] += 1
+                self.road2vehicles[vehicleObj.roadId]['stackingVehiclesSpeed'][vehicleObj.lane] += vehicleObj.speed
+            else:
+                sectionNo = int(vehicleObj.distance//self.sectionLen)
+                sectionDistance = vehicleObj.distance%self.sectionLen
+                if math.isclose(sectionDistance, 0.0):
+                    sectionNo -= 1
+                sectionInfo = self.road2vehicles[vehicleObj.roadId]['vehiclesInfo'][vehicleObj.lane][sectionNo]
+                assert sectionInfo[1] == 0, "overlapping vehicles: {}, {}".format(
+                    (sectionNo + sectionInfo[2]*sectionInfo[0]) * self.sectionLen,
+                    vehicleObj.distance
+                )
+                sectionInfo[1] = 1
+                if math.isclose(sectionInfo[0], 0.0):
+                    print(vehicleObj.distance)
+                    print(self.roadNet.roadDataSet.roadDict[vehicleObj.roadId].roadSegment.length)
+                sectionInfo[2] = sectionDistance / (sectionInfo[0]*self.sectionLen)
+                sectionInfo[3] = vehicleObj.speed
+                
+            roadObj = self.roadNet.roadDataSet.roadDict[vehicleObj.roadId]
+            vehicleObjFuture = tracer.vehicleDS.allVehicleDict[vehicleID]
+            if vehicleObj.roadId == vehicleObjFuture.roadId:
+                self.road2vehicles[vehicleObj.roadId]['totalTravelDistance'] += vehicleObjFuture.distance - vehicleObj.distance
+            elif vehicleObjFuture.roadId in _getInterOutRoads(roadObj.getEndInterId()):
+                self.road2vehicles[vehicleObj.roadId]['totalTravelDistance'] += (vehicleObjFuture.distance 
+                                                                                 + roadObj.roadSegment.length - vehicleObj.distance)
+            else:
+                travelDistance = 0
+                for passedRoadID in _getInterOutRoads(roadObj.getEndInterId()):
+                    passedRoadObj = self.roadNet.roadDataSet.roadDict[passedRoadID]
+                    if vehicleObjFuture.roadId in _getInterOutRoads(passedRoadObj.getEndInterId()):
+                        travelDistance = vehicleObjFuture.distance + passedRoadObj.roadSegment.length + roadObj.roadSegment.length - vehicleObj.distance
+                        break
+                assert travelDistance > 0, "+2 hop distanace"
+                self.road2vehicles[vehicleObj.roadId]['totalTravelDistance'] += travelDistance
+                
+        self.road2vehicles[-1] = {
+             'vehiclesInfo': [
+                 [
+                     [0.0, 0, 0.0, 0.0] for i in range(self.sectionNum)
+                 ] for _ in range(self.max_laneNum)
+             ],
+             'stackingVehicles': [0]*self.max_laneNum,
+             'stackingVehiclesSpeed': [0.0]*self.max_laneNum,
+             'totalTravelDistance': 0.0
+        }
+            
+        return
     
     def createTFRecord(self,tfrecordPath):
         with tf.io.TFRecordWriter(tfrecordPath) as writer:
@@ -254,38 +409,30 @@ class DataSetCreationActionSolver(_BaseActionSolver):
                 writer.write(example.SerializeToString())
         print("tfrecord created:",tfrecordPath)
                 
-    def _action(self,runType,observations):
-        if runType=="random":
-            actions={}
-            for interId,signalState in self.worldSignalState.signalStateDict.items():
-                select_phase=random.randint(1,8)
-                if select_phase != signalState.phase:
-                    actions[interId]=select_phase
-            return actions
-        elif runType=="strategy":
-            return self.strategyRunner.getActionsFunc(observations)
-        else:
-            raise Exception("not expected")
+    def _action(self, observations):
+        return self.strategyRunner.getActionsFunc(observations)
     
     def decideActions(self,
             observations,
             prevActCountInEpisode,
-            runType="random",
+            runType,
             exitType=False,
             debug=False
         ):
-        collect=(prevActCountInEpisode>=2)
+        collect=(prevActCountInEpisode>=1)
+        print(collect)
             
         if collect:
             tracer=self._createRoadTracer(observations)
             prevTracer=self._createPrevRoadTracer()
-            prev2Tracer=self._createPrev2RoadTracer()
+            self._createExampleInit(prevTracer, tracer)
         
-        actions=self._action(runType,observations) #need call even if step is LAST for saving last action for next episode
-        
+        print("before action")
+        actions=self._action(observations) #need call even if step is LAST for saving last action for next episode
+        print("after action")
         for interId,signalState in self.worldSignalState.signalStateDict.items():
             if collect:
-                example=self._createExample(prev2Tracer,prevTracer,tracer,interId)
+                example=self._createExample(prevTracer,tracer,interId)
                 self.exampleList.append(example)
             
             select_phase=actions[interId] if interId in actions else signalState.phase
@@ -295,11 +442,11 @@ class DataSetCreationActionSolver(_BaseActionSolver):
                 signalState.changePhase(select_phase,observations.current_time)
             else:
                 signalState.keepPhase(observations.current_time)
-        
+        print("end action")
         return actions
     
 def list_slice(x,indices):
-    return tf.stack([x[:,i,:] for i in indices], axis=1)
+    return tf.stack([x[:,i,:] for i in indices], axis=1) 
 
 def _createDenceList(name,denseLayerUnits):
     return [
@@ -350,7 +497,7 @@ class EmbeddingLayer(tf.keras.layers.Layer):
     #      estimatedSumRunDistance[any,phase,:]の値は下記条件での特徴ベクトルを表す
     #          phase: アクション（選択する信号フェーズ）
     #   estimatedSumRunDistance2: estimatedSumRunDistanceと同様だが、1ステップでなく2ステップとした予測値
-    
+
     #抜ける方角(N,E,S,W)の順に許可する進行方向を定義（0:左折と右折を許可,1:直進と右折を許可,2:右折を許可）
     phaseToLTRindexDict={
         1:[2,0,2,0], #phase1は「左折して東に抜ける」「左折して西に抜ける」も許可
@@ -416,6 +563,7 @@ class EmbeddingLayer(tf.keras.layers.Layer):
             activation='sigmoid',
             use_bias=False
         )
+
         self.denseRunDistanceBeforeInterList = _createDenceList("rundist_before",denseLayerUnitsDict["runDistance"])
         self.denseRunDistanceAfterInterList = _createDenceList("rundist_after",denseLayerUnitsDict["runDistance"])
         self.denseRunDistance2BeforeInterList = _createDenceList("rundist2_before",denseLayerUnitsDict["runDistance"])
@@ -430,8 +578,8 @@ class EmbeddingLayer(tf.keras.layers.Layer):
         '''
         
     def getInputDim(self):
-        return 24*self.numSegmentInbound+8*self.numSegmentOutbound+21
-    
+        return 24*self.numSegmentInbound+8*self.numSegmentOutbound+21    
+
     @staticmethod
     def calcSumRunDistance(
             inboundVehicles,
@@ -455,7 +603,7 @@ class EmbeddingLayer(tf.keras.layers.Layer):
         
         sumRunDistance=Ri+Ro
         return sumRunDistance
-    
+
     @staticmethod
     def _sliceByList(inputs,numList):
         slicedList=[]
@@ -472,7 +620,7 @@ class EmbeddingLayer(tf.keras.layers.Layer):
         Di=self.numSegmentInbound
         Do=self.numSegmentOutbound
         Dv=self.dimVehiclesVec
-        
+
         ################## 1. 入力を分解する
         _Sg,_Ni,_Si,_Li,_Mi,_No,_So,_Lo,_Mo,Pprev = self._sliceByList(inputs,[4,12*Di,12*Di,4,4,4*Do,4*Do,4,4,1])
         Pprev=tf.cast(Pprev[:,0],tf.uint8)
@@ -576,7 +724,7 @@ class EmbeddingSimpleLayer(EmbeddingLayer):
         inflowEmbedding,_,_,_ = super().call(inputs)
         return inflowEmbedding
     
-class RunDistanceModel(tf.keras.Model):
+class RunDistanceModel_ref(tf.keras.Model):
     # 車両情報と信号フェーズ情報を用いて、未来状態を予測するタスクを解くネットワーク。
     # ※上記タスクを解くことで、車両情報と信号フェーズ情報を特徴ベクトル化（embedding）するネットワークが内部につくられる 
     #
@@ -639,7 +787,7 @@ class RunDistanceModel(tf.keras.Model):
     #     4*Do個の要素 =  (So'_0_0,...,So'_3_0,So'_0_1,...,So'_3_1,...,So'_0_Do-1,...,So'_3_Do-1)
     #     1個の要素 =  sumRunDistance
     #     1個の要素 =  sumRunDistance2
-    
+
     def __init__(self,
             numSegmentInbound,
             numSegmentOutbound,
@@ -670,8 +818,8 @@ class RunDistanceModel(tf.keras.Model):
         return self.embeddingLayer.dimVehiclesVec
     
     def getInputDim(self):
-        return 24*self.embeddingLayer.numSegmentInbound+8*self.embeddingLayer.numSegmentOutbound+23
-    
+        return 24*self.embeddingLayer.numSegmentInbound+8*self.embeddingLayer.numSegmentOutbound+23    
+
     def calcEmbeddingVec(self,tracer,interId,segmentLength):
         inputCreator=InputArrayCreator(
             self.embeddingLayer.numSegmentInbound,
@@ -730,8 +878,10 @@ class RunDistanceModel(tf.keras.Model):
         Ak=tf.cast(inputs[:,-1],tf.float32)
             
         _,_outboundFuture,_eSumRunDist,_eSumRunDist2=self.embeddingLayer(inputsEmbeddingLayer)
+
         Pnow_one_hot=tf.one_hot(Pnow-1,depth=8) # shape = [BATCH,8]
         Pnow_one_hot=tf.expand_dims(Pnow_one_hot,axis=1) # shape = [BATCH,1,8]
+
         outboundFuture=tf.matmul(
             tf.tile(tf.expand_dims(Pnow_one_hot,axis=1),[1,4,1,1]), # shape = [BATCH,4,1,8]
             _outboundFuture, # shape = [BATCH,4,8,Dv]
@@ -744,6 +894,7 @@ class RunDistanceModel(tf.keras.Model):
         
         estimatedVehiclesOnOutboundRoad=tf.transpose(estimatedVehiclesOnOutboundRoad, perm=[0, 2, 1])#shape = [BATCH,2*Do,4]
         estimatedVehiclesOnOutboundRoad=tf.reshape(estimatedVehiclesOnOutboundRoad,[-1,8*Do]) # shape = [BATCH,8*Do]
+
         ##################
         eSumRunDist=tf.matmul(
             Pnow_one_hot,# shape = [BATCH,1,8]
@@ -766,3 +917,49 @@ class RunDistanceModel(tf.keras.Model):
             Ak*eSumRunDist2*RUN_DISTANCE_SCALER
         ],axis=1) #shape = [BATCH,8*Do+1]
         return outputs
+    
+class RunDistanceModel():
+    def __init__(self, sectionNum, embedding_dim = 128):
+        self.sectionNum = sectionNum
+        self.emb_dim = embedding_dim
+    
+    def getModel(self):
+        roadNum = 8
+        laneNum = 3
+        lane_detail_shape = (self.sectionNum, 4)
+        lane_detail_inputs = [Input(shape=lane_detail_shape, dtype='float32') for _ in range(roadNum*laneNum)]
+        
+        lane_embedding_layer = LSTM(self.emb_dim, input_shape=lane_detail_shape, return_state=True)
+        lane_embeddings = []
+        for lane_detail in lane_detail_inputs:
+            _, _, state_c = lane_embedding_layer(lane_detail_layer)
+            lane_embeddings.append(state_c)
+            
+        lane_attribute_shape = (5,)
+        lane_attribute_inputs = [Input(shape=lane_attribute_shape, dtype='float32') for _ in range(roadNum*laneNum)]
+        lane_info = [Concatenate()([em, attr]) for em, attr in zip(lane_embeddings, lane_attribute_inputs)]
+        road_detail = [Concatenate()([lane_info[j+i*laneNum] for j in range(laneNum)]) for i in range(roadNum)]
+        
+        road_embedding_layer1 = Dense(self.emb_dim, input_shape=road_detail[0].shape, activation='tanh')
+        road_embeddings = []
+        for road_lanes in road_detail:
+            road_embeddings.append(road_embedding_layer1(road_lanes))
+            
+        road_attribute_shape = (29,)
+        road_attribute_inputs = [Input(shape=road_attribute_shape, dtype='float32') for _ in range(roadNum)]
+        road_info = [Concatenate()([em, attr]) for em, attr in zip(road_embeddings, road_attribute_inputs)]
+        road_embeddings = Dense(self.emb_dim//2, input_shape=road_detail[0].shape, activation='tanh')(Reshape((roadNum, -1))(Concatenate()(road_info)))
+        out_road_embeddings = [Flatten()(road_embeddings[:,i,:]) for i in range(0, roadNum, 2)]
+        in_road_embeddings  = [Flatten()(road_embeddings[:,i,:]) for i in range(1, roadNum, 2)]
+        
+        out_roads_conv = Dense(self.emb_dim//4, shape=out_road_embeddings[0].shape, activation='tanh')(Average()(out_road_embeddings))
+        in_roads_conv  = Dense(self.emb_dim//4, shape= in_road_embeddings[0].shape, activation='tanh')(Average()(in_road_embeddings))
+        inter_conv = Activation('tanh')(Add()([out_roads_conv, in_roads_conv]))
+        results = Dense(8, shape=inter_conv.shape)(inter_conv)
+        
+        next_phase_input = Input(shape=(1,), dtype='int64')
+        next_phase_mask = tf.one_hot(next_phase_input-1, depth=8)
+        result = Dot(axes=0)(results, next_phase_mask)
+        
+        return keras.Model([lane_detail_inputs, lane_attribute_inputs, road_attribute_inputs, next_phase_input], result)
+        

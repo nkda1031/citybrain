@@ -467,6 +467,7 @@ class RoadDataSet():
         return roadList
 
     def calcRemaindLengthToGoal(self,vehicle,normalize=False):
+        #using route
         road = self.roadDict[vehicle.roadId]
         sumDistance = (road.roadSegment.length - vehicle.distance)
         for roadId in vehicle.route[1:]:
@@ -480,6 +481,7 @@ class RoadDataSet():
         return sumDistance
     
     def calcDelayIndex(self,vehicle):
+        #using route
         road = self.roadDict[vehicle.roadId]
         tt_f_r = (road.roadSegment.length - vehicle.distance) / road.roadSegment.speedLimit
         lastTime = vehicle.currentTime if vehicle.goalTime is None else vehicle.goalTime
@@ -649,8 +651,8 @@ class RoadNet():
         self.intersectionDataSet=intersectionDataSet
         
     def getNextRoadId(self,roadId,laneId):
-        #roadIDの行き先が信号のない交差点である場合は-1を返します。
-        #roadIDの行き先の交差点において、レーンが示す先の方角にroadがない場合は-1を返します。
+        #roadIDの行き先が信号のない交差点である場合はNoneを返します。
+        #roadIDの行き先の交差点において、レーンが示す先の方角にroadがない場合はNoneを返します。
         endInterId = self.roadDataSet.roadDict[roadId].getEndInterId()
         if endInterId in self.intersectionDataSet.signalDict:
             signal = self.intersectionDataSet.signalDict[endInterId]
@@ -658,11 +660,11 @@ class RoadNet():
             outDirection=laneMapDict[inDirection][laneId]
             road=signal.outRoadDict[outDirection]
             if road is None:
-                return -1
+                return None
             else:
                 return road.roadId
         else:
-            return -1
+            return None
     
     def printSummary(self):
         self.roadDataSet.printSummary()

@@ -75,6 +75,7 @@ def exportJsonForVisualization(
     print("------ all done")    
     
 def showDelayIndex(simulator_cfg_file,tqdm=None):
+    #using route
     configs=Simulator.readConfig(simulator_cfg_file)
     roadNet=RoadNet.createFromRoadNetFile(configs['road_file_addr'])
     vehicleDataSetTimeSeries = VehicleDataSetTimeSeries.fromEnvLogDir(
@@ -109,7 +110,7 @@ class EpisodeRunner:
         print("------ start to export simulation output as json for visualization")
         vehicleDataSetTimeSeries=VehicleDataSetTimeSeries.fromEnvLogDir(self.log_dir,tqdm=tqdm)
         vehicleDataSetTimeSeries.exportAsJson("{}/vehicle.json".format(self.log_dir))
-
+        
         phaseDataSetTimeSeries=PhaseDataSetTimeSeries.fromEnvLogDir(self.log_dir,int(self.sim.simulator_configs['report_log_rate']),tqdm=tqdm)
         phaseDataSetTimeSeries.exportAsJson("{}/phase.json".format(self.log_dir))  
     
@@ -150,7 +151,7 @@ class EpisodeRunner:
             ))
         else:
             raise Exception("evaluation does not exist. please set metric_period smaller")
-
+            
     def runLoop(self,
             runType,
             earlyStoppingDelayIndex=None,
@@ -162,7 +163,7 @@ class EpisodeRunner:
         ):
         if breakNumEpsiode is None and runType=="eval":
             breakNumEpsiode=1
-
+            
         def _loop(pbar=None):
             episodes=0
             evalEpisodes=0
@@ -257,7 +258,7 @@ class _BaseActionSolver:
         self.worldSignalState=None
         self.lastEpisodeWorldSignalState=None
         self.firstActInEpisodeCalled=False
-
+        
         self.prevObservations=None
         self.prevWorldSignalState=None
         self.prev2Observations=None
@@ -289,16 +290,16 @@ class _BaseActionSolver:
             self.lastEpisodeWorldSignalState=self.worldSignalState
             self.worldSignalState=worldSignalState
             self.startFollowingEpisode(signalizedInterIdList)
-
+            
     def getTrainProgress(self):
         return 0,0.
     
     def getBufferLength(self):
         return 0
-
+    
     def getStatMessage(self):
         return "(no stat)"
-
+    
     def getExtraMessage(self):
         return None
     
@@ -307,7 +308,7 @@ class _BaseActionSolver:
             debug=False
         ):
         return self.actWithRunType(observations,"eval",None,debug)
-
+    
     def actWithRunType(self,
             observations,
             runType="eval",
@@ -330,7 +331,7 @@ class _BaseActionSolver:
             debug=debug)
         ############################
         self.prevActCountInEpisode+=1
-
+        
         self.prev2Observations=self.prevObservations
         self.prev2WorldSignalState=self.prevWorldSignalState
         
@@ -340,7 +341,7 @@ class _BaseActionSolver:
         return actions
         
         raise Exception("_BaseActionSolver is abstarct class. please create subclass and override actWithRunType")
-
+        
     def _createRoadTracer(self,observations):
         return self._createRoadTracerSub(self.worldSignalState,observations)
     def _createPrevRoadTracer(self):
@@ -397,13 +398,13 @@ class LogActionSolver(_BaseActionSolver):
         ):
         actions=self.actionLogDict[observations.current_time] if observations.current_time in self.actionLogDict else {}
         return actions
-
+    
 class ObservationsReader():
     def __init__(self,observations,info,roadNet):
         self.interIdToObservationDict = observations
         self.current_time=info["step"]
         self.vehicleDS = VehicleDataSet.fromObservationInfo(info,self.current_time,roadNet)
-
+        
 def _create_result(total_served_vehicles=None,delay_index=None,error_msg=""):
     # result to be written in out/result.json
     if total_served_vehicles is None or delay_index is None:
@@ -462,7 +463,7 @@ class Simulator:
         self.intersections, self.roads, self.agents = process_roadnet(roadnet_path)
         
         self.roadNet=RoadNet.createFromRoadNetFile(roadnet_path)
-
+        
         self.env.set_log(1)
         self.env.set_info(1)
         
@@ -506,7 +507,7 @@ class Simulator:
                 observations, rewards, dones, info = self.env.step(actions)
                 step+=1
                 info['step'] = step
-
+                
                 agent_id_list=list(observations.keys())
                 for agent_id in agent_id_list:
                     if(dones[agent_id]):
@@ -531,7 +532,7 @@ class Simulator:
                                 earlyStoppingDelayIndex
                             ))
                             return observations, rewards, dones, info,False
-
+                        
         observations, rewards, dones, info, completed=_roop(observations,info)
         self._act(agent,runType,{
             'observations':observations,
@@ -547,7 +548,7 @@ class Simulator:
         resetDir(self.simulator_configs['report_log_addr'])
         logger.info("*" * 40)
         logger.info("start to simulate")
-
+        
         self._run(agent,runType=runType,earlyStoppingDelayIndex=earlyStoppingDelayIndex,pbar=pbar)
         vehicleDataSetTimeSeries = VehicleDataSetTimeSeries.fromEnvLogDir(
             self.simulator_configs['report_log_addr'],
@@ -567,7 +568,7 @@ class Simulator:
         ):
         def write_result(result,out_path):
             json.dump(result, open(out_path, 'w'), indent=2)
-
+            
         out_path = Path(scores_out_dir) / "scores.json"
         # simulation
         start_time = time.time()
@@ -595,10 +596,10 @@ class Simulator:
                 out_path
             )
             raise Exception("error when running simulation")
-
+            
         end_time = time.time()
         logger.info(f"total evaluation cost {end_time-start_time} s")
-
+        
         print("-----result----")
         print("last time :",lastTime)
         if printDelayIndexTimeSeries:
@@ -608,7 +609,7 @@ class Simulator:
             print("num served vehicles :",timeToNumServedVehiclesDict[lastTime])
             print("delay index :",timeToDelayIndexDict[lastTime])
         print("---------------", flush=True)
-
+        
         logger.info("*" * 40)
         logger.info("Evaluation complete")
         return timeToNumServedVehiclesDict[lastTime],timeToDelayIndexDict[lastTime],lastTime

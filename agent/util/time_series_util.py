@@ -60,10 +60,13 @@ class Vehicle:
             'goalTime':self.goalTime,
         }
     def calcRunDistance(self,prevVehicel,roadDataSet,normalize=False):
+        #using route
         return prevVehicel.calcRemaindLengthToGoal(roadDataSet,normalize=normalize) - self.calcRemaindLengthToGoal(roadDataSet,normalize=normalize)
     def calcRemaindLengthToGoal(self,roadDataSet,normalize=False):
+        #using route
         return roadDataSet.calcRemaindLengthToGoal(self,normalize=normalize)
     def calcOriginalLengthToGoal(self,roadDataSet):
+        #using route
         return roadDataSet.calcRemaindLengthToGoal(self.originalVehicle,normalize=False)
     def setOriginalVehicle(self,vehicle):
         self.originalVehicle=vehicle
@@ -100,16 +103,8 @@ class VehicleDataSet():
                 vehicles_dest.sort(key = lambda vehicle:vehicle.distance,reverse=True)
         self.vehiclesOnRoadDict=vehicles_on_road
 
-    def getSortedVehicleList(self,route):
-        #Parameter:
-        #  route: List of int
-        #    it specifies roadIDs of future route of a vehicle
-        #    [current_roadId,next_roadId,next_next_roadId,...]
-        #
-        #Return: List of Vehicle
-        #  this func returns Vehicles that match 'route'. list is sorted by distance of vehicle
-        currentRoadId=route[0]
-        if len(route)==1:
+    def getSortedVehicleList(self,currentRoadId,nextRoadId=None):
+        if nextRoadId is None:
             if currentRoadId in self.vehiclesOnRoadDict:
                 vehicleList=[]
                 for sortedVehicleList in self.vehiclesOnRoadDict[currentRoadId].values():
@@ -117,26 +112,16 @@ class VehicleDataSet():
                 vehicleList.sort(key = lambda vehicle:vehicle.distance,reverse=True)
                 return vehicleList
         else:
-            nextRoadId=route[1]
             if currentRoadId in self.vehiclesOnRoadDict and nextRoadId in self.vehiclesOnRoadDict[currentRoadId]:
-                sortedVehicleList=self.vehiclesOnRoadDict[currentRoadId][nextRoadId]
-
-                len_route=len(route)
-                if len_route>=3:
-                    #clip according to route
-                    return [
-                        vehicle
-                            for vehicle in sortedVehicleList
-                                if vehicle.route[:len_route]==route
-                    ]
-                else:
-                    return sortedVehicleList
+                return self.vehiclesOnRoadDict[currentRoadId][nextRoadId]
         return []
 
     def calcDelayIndex(self,roadDataSet):
-        #正しくDelay Indexを計算するには、既にゴールしたvehicleも計算対象にする必要がある。
-        #fromEnvLogFileから生成した場合は、既にゴールしたvehicleもallVehicleDictに含まれるが、
-        #fromObservationInfoから生成した場合は、既にゴールしたvehicleが含まれない。
+        #using route
+        
+        #豁｣縺励￥Delay Index繧定ｨ育ｮ励☆繧九↓縺ｯ縲∵里縺ｫ繧ｴ繝ｼ繝ｫ縺励◆vehicle繧りｨ育ｮ怜ｯｾ雎｡縺ｫ縺吶ｋ蠢�ｦ√′縺ゅｋ縲�
+        #fromEnvLogFile縺九ｉ逕滓�縺励◆蝣ｴ蜷医�縲∵里縺ｫ繧ｴ繝ｼ繝ｫ縺励◆vehicle繧ＢllVehicleDict縺ｫ蜷ｫ縺ｾ繧後ｋ縺後�
+        #fromObservationInfo縺九ｉ逕滓�縺励◆蝣ｴ蜷医�縲∵里縺ｫ繧ｴ繝ｼ繝ｫ縺励◆vehicle縺悟性縺ｾ繧後↑縺��
         
         if len(self.allVehicleDict)==0:
             return 1
@@ -231,6 +216,7 @@ class VehicleDataSetTimeSeries():
         return timeToNumServedVehiclesDict
         
     def calcDelayIndex(self,roadDataSet):        
+        #using route
         timeToDelayIndexDict = {}
         for currentTime,vehicleDS in self.timeToVehicleDataSetDict.items():
             timeToDelayIndexDict[currentTime] = vehicleDS.calcDelayIndex(roadDataSet)

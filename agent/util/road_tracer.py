@@ -13,27 +13,28 @@ def interpolate(x1,x2,w1,w2):
 class RoadTracer():
     #iterateDistanceSegmentedVehicleList
     # -> iterateDistanceTargetVehicleList
+    #calcSumRunDistance
+    # -> iterateDistanceTargetVehicleList
     
     def __init__(self,worldSignalState,vehicleDS,signalDict,roadDS):
         self.worldSignalState=worldSignalState
         self.vehicleDS=vehicleDS
         self.signalDict=signalDict
         self.roadDS=roadDS
-
+        
     def calcSumRunDistance(self,
             vehicleDSAfterRun,
             interId,
             distanceFromInter,
-            includePrevRoad=False,
             normalize=False
         ):
+        #using route
         sumRunDistance=0
         for vehicleList,_ in self.iterateDistanceTargetVehicleList(
                 interId,
                 0,
                 distanceFromInter,
                 "inbound",
-                includePrevRoad=includePrevRoad
             ):
             for vehicle in vehicleList:
                 if vehicle.vehicleId in vehicleDSAfterRun.existingVehicleDict:
@@ -64,19 +65,6 @@ class RoadTracer():
                 signalized[idx]=1 if road.getStartInterId() in self.signalDict else 0
         return signalized
         
-    def _getPassablePreviousRoadList(self,road):
-        #roadに（現在の信号を考慮して）侵入可能なRoadのListを返します。
-        if road.getStartInterId() in self.signalDict: #it is signalized intersection
-            return self.worldSignalState.getPassablePreviousRoadList(
-                road,
-                self.signalDict
-            )
-        else: #it is not signalized intersection
-            return [
-                _road
-                    for _road in self.roadDS.interIdToInboudRoadListDict[road.getStartInterId()]
-                        if _road.getOppositRoad().roadId!=road.roadId
-           ]
     def _createDistanceTargetOutboundVehicleList(self,
             minDistanceFromInter,
             maxDistanceFromInter,
@@ -88,7 +76,7 @@ class RoadTracer():
         road = self.roadDS.roadDict[roadId]
         roadLen=road.roadSegment.length
         targetVehicleOnRoadList=[]
-        for vehicle in reversed(self.vehicleDS.getSortedVehicleList([roadId])):
+        for vehicle in reversed(self.vehicleDS.getSortedVehicleList(roadId)):
             distFromInter=vehicle.distance
             if distFromInter>=maxDistanceFromInter:
                 break
@@ -99,21 +87,17 @@ class RoadTracer():
     def _createDistanceTargetInboundVehicleList(self,
             minDistanceFromInter,
             maxDistanceFromInter,
-            route,
-            includePrevRoad=False
+            roadId,
+            nextRoadId
         ):
-        #現在route[0]にいて、routeに従った道路を走行予定であり、
-        #かつroute[0]の終点から測ってminDistanceFromInterからmaxDistanceFromInterの距離に存在するvehicleを返します。
-        #maxDistanceFromInterがroute[0]のlengthを超える場合の挙動
-        # includePrevRoadがFalseの場合：
-        #  - route[0]上の車両以外を含めません
-        # includePrevRoadがTrueの場合：
-        #  - route[0]に侵入できるroadを走行中の車両も含めます。
+        #現在roadIdにいて、nextRoadIdに進む道路を走行しており、
+        #かつroadIdの終点から測ってminDistanceFromInterからmaxDistanceFromInterの距離に存在するvehicleを返します。
+        #maxDistanceFromInterがroadIdのlengthを超える場合でもroadId上の車両以外を含めません
         
-        road = self.roadDS.roadDict[route[0]]
+        road = self.roadDS.roadDict[roadId]
         roadLen=road.roadSegment.length
         targetVehicleOnRoadList=[]
-        for vehicle in self.vehicleDS.getSortedVehicleList(route):
+        for vehicle in self.vehicleDS.getSortedVehicleList(roadId,nextRoadId):
             distFromInter=roadLen-vehicle.distance
             if distFromInter>=maxDistanceFromInter:
                 break
@@ -121,88 +105,7 @@ class RoadTracer():
                 continue
             targetVehicleOnRoadList.append(vehicle)
             
-        if includePrevRoad:
-            for prevRoad in self._getPassablePreviousRoadList(road):
-                if minDistanceFromInter<=roadLen and roadLen<maxDistanceFromInter:
-                    targetVehicleOnRoadList+=self._createDistanceTargetInboundVehicleList(
-                        0,
-                        maxDistanceFromInter-roadLen,
-                        [prevRoad.roadId]+route,
-                        False
-                    )
-                elif roadLen < minDistanceFromInter:
-                    targetVehicleOnRoadList+=self._createDistanceTargetInboundVehicleList(
-                        minDistanceFromInter-roadLen,
-                        maxDistanceFromInter-roadLen,
-                        [prevRoad.roadId]+route,
-                        False
-                    )
-            
         return targetVehicleOnRoadList
-        
-    def _createTimeTargetVehicleList(self,
-            limit_time,
-            roadId,
-            nextRoadId,
-            maxDepth=0,
-        ):
-        #roadIdを走行後にnextRoadId走行予定であり、かつ制限時間内にroadIdの終点に到達するvehicleをListで返します
-        #maxDepthはroadIdに「通過可能に接続するroad」を何個まで遡るかを指定します。
-        #「通過可能に接続する」とは、現在の信号フェーズのもとで、roadIdに遷移することが可能なroadを指します
-        #※：remained_limit_timeがNoneである場合には、maxDepthを無視し、
-        #    roadIdを走行後にnextRoadId走行予定の全てのvehicleをListで返します
-        return self._createVehicleListThatGetToLastInterInTime(
-                limit_time,
-                [roadId,nextRoadId],
-                maxDepth,
-            )
-    
-    def _createVehicleListThatGetToLastInterInTime(self,
-            remained_limit_time,
-            futureRoute,
-            maxDepth=0,
-        ):
-        #futureRouteで示されるroadIdを走行予定であり、かつ制限時間内に直近のinteresectionに到達するvehicleをListで返します
-        #制限時間とは、futureRoute[0],futureRoute[1]の間にあるintersectionに到達するまでの時間を指します
-        #maxDepthはfutureRouteに「通過可能に接続するroad」を何個まで遡るかを指定します。
-        #「通過可能に接続する」とは、現在の信号フェーズのもとで、futureRoute[0]に遷移することが可能なroadを指します
-        #maxDepthの元で、制限時間内にfutureRouteで示されるroadIdを将来通る全てのvehicleをListで返します
-        #※：remained_limit_timeがNoneである場合には、maxDepthを無視し、
-        #    futureRoute[0]に存在しfutureRouteで示されるroadIdを走行予定の全てのvehicleをListで返します
-        
-        road = self.roadDS.roadDict[futureRoute[0]]            
-        targetVehicleOnRouteList=self._createVehicleListThatGetToFirstInterInTime(futureRoute, remained_limit_time)
-        if remained_limit_time is not None:
-            remained_limit_time -= road.roadSegment.length/road.roadSegment.speedLimit
-            if maxDepth>0 and remained_limit_time>0:
-                for pre_road in self._getPassablePreviousRoadList(road):
-                    targetVehicleOnRouteList+=self._createVehicleListThatGetToLastInterInTime(
-                        remained_limit_time,
-                        [pre_road.roadId]+futureRoute,
-                        maxDepth-1,
-                    )
-        return targetVehicleOnRouteList
-
-    def _createVehicleListThatGetToFirstInterInTime(self,
-            futureRoute,
-            remained_limit_time=None,
-        ):
-        #futureRouteで示されるroadIdを走行予定であり、かつ制限時間内に直近のinteresectionに到達するvehicleをListで返します
-        #制限時間とは、futureRoute[0],futureRoute[1]の間にあるintersectionに到達するまでの時間を指します
-        #※：remained_limit_timeがNoneである場合には、
-        #    futureRoute[0]に存在しfutureRouteで示されるroadIdを走行予定の全てのvehicleをListで返します
-        
-        if remained_limit_time is not None:
-            road = self.roadDS.roadDict[futureRoute[0]]            
-            targetVehicleOnRoadList=[]
-            for vehicle in self.vehicleDS.getSortedVehicleList(futureRoute):
-                run_dist = road.roadSegment.speedLimit*remained_limit_time
-                if vehicle.distance+run_dist<road.roadSegment.length:
-                    break
-                targetVehicleOnRoadList.append(vehicle)
-            return targetVehicleOnRoadList
-        else:
-            return self.vehicleDS.getSortedVehicleList(futureRoute)
     
     @staticmethod
     def _sumDictValues(keyList,targetDict):
@@ -211,50 +114,6 @@ class RoadTracer():
             if key in targetDict:
                 summed+=targetDict[key]
         return summed
-    
-    def calcAverageTravelTimeInboundLane(self,
-            interId,
-            numSegment,
-            segmentLength,
-            includePrevRoad=False
-        ):
-        vehicleAverageTravelTimeList=[0]*(12*numSegment)
-        for seg,(current_direction,next_direction),vehicleList in self.iterateDistanceSegmentedVehicleList(
-                interId,
-                numSegment,
-                segmentLength,
-                boundType="inbound",
-                includePrevRoad=includePrevRoad,
-            ):
-            idx=LaneVehicleNumCalc.directionToLane12indexDict[current_direction][next_direction]-1
-            if len(vehicleList)==0:
-                vehicleAverageTravelTimeList[idx+seg*12]=0
-            else:
-                vehicleAverageTravelTimeList[idx+seg*12]=sum([v.minTravelTime for v in vehicleList])/len(vehicleList)
-                
-        return vehicleAverageTravelTimeList
-    
-    def calcAverageTotalRouteLengthInboundLane(self,
-            interId,
-            numSegment,
-            segmentLength,
-            includePrevRoad=False
-        ):
-        vehicleAverageTotalRouteLengthList=[0]*(12*numSegment)
-        for seg,(current_direction,next_direction),vehicleList in self.iterateDistanceSegmentedVehicleList(
-                interId,
-                numSegment,
-                segmentLength,
-                boundType="inbound",
-                includePrevRoad=includePrevRoad,
-            ):
-            idx=LaneVehicleNumCalc.directionToLane12indexDict[current_direction][next_direction]-1
-            if len(vehicleList)==0:
-                vehicleAverageTotalRouteLengthList[idx+seg*12]=0
-            else:
-                vehicleAverageTotalRouteLengthList[idx+seg*12]=sum([v.calcOriginalLengthToGoal(self.roadDS) for v in vehicleList])/len(vehicleList)
-                
-        return vehicleAverageTotalRouteLengthList
     
     def calcVehicleNumAndSpeedOnSegmentedOutboundRoad(self,
             interId,
@@ -280,7 +139,6 @@ class RoadTracer():
             interId,
             numSegment,
             segmentLength,
-            includePrevRoad=False
         ):
         vehicleNumList=[0]*(12*numSegment)
         vehicleSpeedList=[0]*(12*numSegment)
@@ -289,7 +147,6 @@ class RoadTracer():
                 numSegment,
                 segmentLength,
                 boundType="inbound",
-                includePrevRoad=includePrevRoad,
             ):
             idx=LaneVehicleNumCalc.directionToLane12indexDict[current_direction][next_direction]-1
             vehicleNumList[idx+seg*12]=len(vehicleList)
@@ -301,7 +158,6 @@ class RoadTracer():
             numSegment,
             segmentLength,
             boundType="inbound",
-            includePrevRoad=False
         ):
         for seg in range(numSegment):
             minDistFromInter=seg*segmentLength
@@ -311,7 +167,6 @@ class RoadTracer():
                     minDistFromInter,
                     maxDistFromInter,
                     boundType,
-                    includePrevRoad=includePrevRoad
                 ):
                 yield seg,directions,vehicleList
     
@@ -320,7 +175,6 @@ class RoadTracer():
             minDistanceFromInter,
             maxDistanceFromInter,
             boundType="inbound",
-            includePrevRoad=False
         ):
         #boundTypeが"inbound"の場合、下記のtupleをイテレータします。
         # tupleの要素0：下記の進行方向を満たし、かつ指定条件（※１）を満たすvehicleのList
@@ -346,8 +200,8 @@ class RoadTracer():
                     targetVehicleList=self._createDistanceTargetInboundVehicleList(
                         minDistanceFromInter,
                         maxDistanceFromInter,
-                        [road.roadId,nextRoad.roadId],
-                        includePrevRoad=includePrevRoad
+                        road.roadId,
+                        nextRoad.roadId,
                     )
                     yield targetVehicleList,(current_direction,next_direction)
         elif boundType=="outbound":
@@ -362,18 +216,15 @@ class RoadTracer():
                 yield targetVehicleList,current_direction
         else:
             raise Exception("not expected")
-
                 
-    def iterateTimeTargetVehicleList(self,interId,limit_time,maxDepth=0):
+    def iterateTimeTargetVehicleList(self,interId,limit_time):
         #下記のtupleをイテレータします。
         # tupleの要素0：下記の進行方向を満たし、かつ指定条件（※１）を満たすvehicleのList
         # tupleの要素1：交差点での進行方向を表すtuple（current_direction,next_direction）、current_directionから侵入しnext_directionに抜けることを表す
         #
         #指定条件（※１）
         #・limit_timeで示す制限時間内にinterIdに到達すること
-        #・maxDepthはinterIdに侵入するroadを基準に「通過可能に接続するroad」を何個まで遡るかを指定します。
-        #  maxDepthが0のときは、interIdに直接接続しているroad上のvehicleのみが対象となります。
-        #「通過可能に接続する」とは、現在の信号フェーズのもとで遷移することが可能なroadを指します
+        #  interIdに直接接続しているroad上のvehicleのみが対象となります。
         #・limit_timeがNoneである場合には、指定条件を無視します（maxDepthも無視）
         signal = self.signalDict[interId]
         for road in self.roadDS.interIdToInboudRoadListDict[interId]:                
@@ -381,21 +232,73 @@ class RoadTracer():
             for next_direction,nextRoad in signal.outRoadDict.items():
                 if nextRoad is None or next_direction==current_direction:
                     continue
-                targetVehicleList=self._createTimeTargetVehicleList(
-                    limit_time,
-                    road.roadId,
-                    nextRoad.roadId,
-                    maxDepth=maxDepth,
-                )
+                targetVehicleList=self.vehicleDS.getSortedVehicleList(road.roadId,nextRoad.roadId)
                 yield targetVehicleList,(current_direction,next_direction)
+    ####
+    def iterateTimeTargetVehicleListTuple(self,interId,limit_time,depth):
+        #下記のtupleをイテレータします。
+        # tupleの要素0：下記の進行方向を満たし、かつ指定条件（※１）を満たすvehicleのList
+        # tupleの要素1：交差点での進行方向を表すtuple（current_direction,next_direction）、current_directionから侵入しnext_directionに抜けることを表す
+        #
+        #指定条件（※１）
+        #・limit_timeで示す制限時間内にinterIdに到達すること
+        #  interIdに直接接続しているroad上のvehicleのみが対象となります。
+        #・limit_timeがNoneである場合には、指定条件を無視します（maxDepthも無視）
+        signal = self.signalDict[interId]
+        for road in self.roadDS.interIdToInboudRoadListDict[interId]:                
+            current_direction,_=signal.solveDirection(road.roadId)
+            for next_direction,nextRoad in signal.outRoadDict.items():
+                if nextRoad is None or next_direction==current_direction:
+                    continue
+                    
+                scanRouteInfo = {d:[] for d in range(depth+1)}
+                scanRouteInfo[0].append((road.roadId, interId, nextRoad.roadId, 1))
+                targetVehicleListTuple = []
+                for d in range(depth+1):
+                    for fromRoadID, scanInterID, toRoadID, prob in scanRouteInfo[d]:
+                        targetVehicleListTuple.append((self.vehicleDS.getSortedVehicleList(fromRoadID, toRoadID), prob))
+                        
+                        # update scanRouteInfo
+                        if d == depth:
+                            continue
+                        nextDepthInterID = self.roadDS.roadDict[fromRoadID].getStartInterId()
+                        for nextFromRoad in self.roadDS.interIdToInboudRoadListDict[nextDepthInterID]:
+                            if nextFromRoad.roadId == self.roadDS.roadDict[fromRoadID].getOppositRoad().roadId:
+                                continue
+                            if (nextDepthInterID in self.signalDict.keys()) and (scanInterID in self.signalDict.keys()):
+                                nextFromRoadDir, _ = self.signalDict[nextDepthInterID].solveDirection(nextFromRoad.roadId)
+                                toRoadDir, _ = self.signalDict[scanInterID].solveDirection(toRoadID)
+                                if nextFromRoadDir == toRoadDir:
+                                    continue
+                                    
+                            directionMap={"N":0,"E":1,"S":2,"W":3}
+                            fromRoadDir, _ = self.signalDict[scanInterID].solveDirection(fromRoadID)
+                            def _calcWeight(roadObj):
+                                roadObjDir, _ = self.signalDict[scanInterID].solveDirection(roadObj.roadId)
+                                if self.roadDS.roadDict[fromRoadID].getOppositRoad().roadId != roadObj.roadId:
+                                    return 0
+                                elif (directionMap[fromRoadDir] - directionMap[roadObjDir])%2:
+                                    return 3
+                                else:
+                                    return 1
+                                    
+                            nextToRoadDirCandidates = {
+                                roadObj.roadId:_calcWeight(roadObj) for roadObj in self.roadDS.interIdToOutboudRoadListDict[scanInterID]
+                            }
+                            
+                            nextProb = prob*nextToRoadDirCandidates[toRoadID]/sum(nextToRoadDirCandidates.values())
+                            
+                            scanRouteInfo[d+1].append((nextFromRoad.roadId, nextDepthInterID, fromRoadID, nextProb))
+                            
+                yield targetVehicleListTuple,(current_direction,next_direction)
     
     def createPhaseToRunDistanceDict(self,
             interId,
             limit_time,
-            maxDepth=0,
             debug=False,
             prohibitDecreasingGoalDistance=False,
-            prohibitDecreasingSpeed=True
+            prohibitDecreasingSpeed=True,
+            depth=0####
         ):
         
         runDistanceDict={
@@ -404,10 +307,13 @@ class RoadTracer():
             "stop_then_pass":{},
         }
         
-        for targetVehicleList,directions in self.iterateTimeTargetVehicleList(interId,limit_time,maxDepth):
+        #for targetVehicleList,directions in self.iterateTimeTargetVehicleList(interId,limit_time):####
+        for targetVehicleListTuple,directions in self.iterateTimeTargetVehicleListTuple(interId,limit_time,depth):####
             for focusedSignalAssumedState in runDistanceDict:
-                runDistanceDict[focusedSignalAssumedState][directions]=self._calcRunningRouteDistanceForVehicelList(
-                    targetVehicleList,
+                #runDistanceDict[focusedSignalAssumedState][directions]=self._calcRunningRouteDistanceForVehicelList(####
+                runDistanceDict[focusedSignalAssumedState][directions]=self._calcRunningRouteDistanceForVehicelListTuple(####
+                    #targetVehicleList,####
+                    targetVehicleListTuple,####
                     limit_time,
                     interId,
                     focusedSignalAssumedState,
@@ -429,27 +335,6 @@ class RoadTracer():
             phaseToRunDistanceDict[phaseId]=runDistanceForStopDirection+runDistanceForPassDirection
         return phaseToRunDistanceDict
     
-    def calcNumVehicleOnLane(self,
-            interId,
-            limit_time=None,
-            maxDepth=0,
-            insertZeroIndex=False,
-            debug=False
-        ):
-        inbound_road_list = self.roadDS.interIdToInboudRoadListDict[interId]
-        signal = self.signalDict[interId]
-        
-        lane_vehicle_num=[0]*13
-        lane_vehicle_num[0]=None
-        for targetVehicleList,(current_direction,next_direction) in self.iterateTimeTargetVehicleList(interId,limit_time,maxDepth):
-            idx=LaneVehicleNumCalc.directionToLane12indexDict[current_direction][next_direction]
-            lane_vehicle_num[idx]+=len(targetVehicleList)
-            
-        if insertZeroIndex:
-            return lane_vehicle_num
-        else:
-            return lane_vehicle_num[1:]
-    
     @staticmethod
     def _getLeadingVehicleList(sorted_vehicles,roadLength,speedThres,distanceDiffThres):
         #sorted_vehicles(distanceが大きい順)から条件を満たす先頭集団のvechicleのリストを返します
@@ -463,7 +348,7 @@ class RoadTracer():
                     continue
             break
         return vehicleList
-
+    
     @classmethod
     def _getStoppingVehicleList(cls,sorted_vehicles,roadLength):
         return cls._getLeadingVehicleList(sorted_vehicles,roadLength,0.0001,VEHICLE_MERGIN_METER+0.01)
@@ -531,7 +416,6 @@ class RoadTracer():
             prohibitDecreasingGoalDistance=False,
             prohibitDecreasingSpeed=True
         ):
-        normalizeDistance=True
         
         sum_run_distance=0
         for vehicle in vehicleList:
@@ -543,12 +427,34 @@ class RoadTracer():
                 prohibitDecreasingGoalDistance=prohibitDecreasingGoalDistance,
                 prohibitDecreasingSpeed=prohibitDecreasingSpeed
             )
-            if normalizeDistance:
-                run_distance=run_distance/vehicle.minTravelTime
-                #run_distance=run_distance/vehicle.calcOriginalLengthToGoal(self.roadDS)
             
             if inter_archived:
                 sum_run_distance+=run_distance
+        return sum_run_distance
+    
+    ####
+    def _calcRunningRouteDistanceForVehicelListTuple(self,
+            vehicleListTuple,
+            limit_time,
+            focusedSignalizedInterId,
+            focusedSignalAssumedState,
+            prohibitDecreasingGoalDistance=False,
+            prohibitDecreasingSpeed=True
+        ):
+        
+        sum_run_distance=0
+        for vehicleList, prob in vehicleListTuple:
+            for vehicle in vehicleList:
+                run_distance,inter_archived=self._calcRunningRouteDistance(
+                    vehicle,
+                    limit_time,
+                    focusedSignalizedInterId,
+                    focusedSignalAssumedState,
+                    prohibitDecreasingGoalDistance=prohibitDecreasingGoalDistance,
+                    prohibitDecreasingSpeed=prohibitDecreasingSpeed
+                )
+                if inter_archived:
+                    sum_run_distance+=run_distance*prob
         return sum_run_distance
         
     def _calcRunningRouteDistance(self,
@@ -563,9 +469,10 @@ class RoadTracer():
         remained_time=limit_time
         interPassed=False
         interAchived=False
-        for idx,roadId in enumerate(vehicle.route):
-            prevRoadId = vehicle.route[idx-1] if 0<idx else None
-            nextRoadId = vehicle.route[idx+1] if len(vehicle.route)>idx+1 else None
+        route=[vehicle.roadId,vehicle.nextRoadId]
+        for idx,roadId in enumerate(route):
+            prevRoadId = route[idx-1] if 0<idx else None
+            nextRoadId = route[idx+1] if len(route)>idx+1 else None
             road = self.roadDS.roadDict[roadId]
             roadLength=road.roadSegment.length
             startInterId=road.getStartInterId()
@@ -581,8 +488,8 @@ class RoadTracer():
                 else:
                     passable=True
                     
-            sorted_vehicles = self.vehicleDS.getSortedVehicleList([roadId,nextRoadId])
-
+            sorted_vehicles = self.vehicleDS.getSortedVehicleList(roadId,nextRoadId)
+            
             #remained_time以内の時間でのroadにおける走行距離と走行時間を計算
             goalDistance = roadLength
             speedLimit=road.roadSegment.speedLimit
