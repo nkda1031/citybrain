@@ -312,16 +312,26 @@ class RunDistanceStrategy(_BaseStrategy):
         self.prohibitDecreasingGoalDistance=prohibitDecreasingGoalDistance
         self.prohibitDecreasingSpeed=prohibitDecreasingSpeed
         self.depth=depth####
-    
+        self.spawnInters={} # matsushima: dict key=vehicle_id, value=Intersection
+
     def getName(self):
         return "run_distance"
     
     def calcReward(self,observations,interId,debug=False):
+        # matsushima: update spawnInters for undiscovered vehicle
+        for v_id, v in observations.vehicleDS.allVehicleDict.items():
+            if v_id not in self.spawnInters.keys():
+                spawnRoad = self.roadNet.roadDataSet.roadDict[v.roadId]
+                spawnInter = self.roadNet.intersectionDataSet.intersectionDict[spawnRoad.getStartInterId()]
+                self.spawnInters.update({v.vehicleId: spawnInter})
+
         tracer=RoadTracer(
             self.worldSignalState,
             observations.vehicleDS,
             self.roadNet.intersectionDataSet.signalDict,
+            self.roadNet.intersectionDataSet.intersectionDict, # matsushima
             self.roadNet.roadDataSet,
+            self.spawnInters # matsushima
         )
         reward=tracer.createPhaseToRunDistanceDict(
             interId,

@@ -1,4 +1,5 @@
 import math
+import numpy as np
 
 from signal_state_util import SignalState,LaneVehicleNumCalc
 
@@ -16,11 +17,13 @@ class RoadTracer():
     #calcSumRunDistance
     # -> iterateDistanceTargetVehicleList
     
-    def __init__(self,worldSignalState,vehicleDS,signalDict,roadDS):
+    def __init__(self,worldSignalState,vehicleDS,signalDict,interDict,roadDS,spawnInters):
         self.worldSignalState=worldSignalState
         self.vehicleDS=vehicleDS
         self.signalDict=signalDict
+        self.interDict=interDict # matsushima
         self.roadDS=roadDS
+        self.spawnInters=spawnInters # matsushima
         
     def calcSumRunDistance(self,
             vehicleDSAfterRun,
@@ -36,7 +39,7 @@ class RoadTracer():
                 distanceFromInter,
                 "inbound",
             ):
-            for vehicle in vehicleList:
+            for vehicle in vehicleList: # matsushima: vehicleTupleList: [(vehicle, prob), ...]
                 if vehicle.vehicleId in vehicleDSAfterRun.existingVehicleDict:
                     futureVehicle = vehicleDSAfterRun.existingVehicleDict[vehicle.vehicleId]
                     sumRunDistance+=futureVehicle.calcRunDistance(vehicle,self.roadDS,normalize=normalize)
@@ -236,6 +239,8 @@ class RoadTracer():
                 yield targetVehicleList,(current_direction,next_direction)
     ####
     def iterateTimeTargetVehicleListTuple(self,interId,limit_time,depth):
+        def cosine_similarity(x, y):
+            return np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y))
         #下記のtupleをイテレータします。
         # tupleの要素0：下記の進行方向を満たし、かつ指定条件（※１）を満たすvehicleのList
         # tupleの要素1：交差点での進行方向を表すtuple（current_direction,next_direction）、current_directionから侵入しnext_directionに抜けることを表す
@@ -245,52 +250,48 @@ class RoadTracer():
         #  interIdに直接接続しているroad上のvehicleのみが対象となります。
         #・limit_timeがNoneである場合には、指定条件を無視します（maxDepthも無視）
         signal = self.signalDict[interId]
-        for road in self.roadDS.interIdToInboudRoadListDict[interId]:                
-            current_direction,_=signal.solveDirection(road.roadId)
+        for fromRoad in self.roadDS.interIdToInboudRoadListDict[interId]:
+            current_direction,_=signal.solveDirection(fromRoad.roadId)
             for next_direction,nextRoad in signal.outRoadDict.items():
                 if nextRoad is None or next_direction==current_direction:
                     continue
                     
-                scanRouteInfo = {d:[] for d in range(depth+1)}
-                scanRouteInfo[0].append((road.roadId, interId, nextRoad.roadId, 1))
-                targetVehicleListTuple = []
-                for d in range(depth+1):
-                    for fromRoadID, scanInterID, toRoadID, prob in scanRouteInfo[d]:
-                        targetVehicleListTuple.append((self.vehicleDS.getSortedVehicleList(fromRoadID, toRoadID), prob))
-                        
-                        # update scanRouteInfo
-                        if d == depth:
-                            continue
-                        nextDepthInterID = self.roadDS.roadDict[fromRoadID].getStartInterId()
-                        for nextFromRoad in self.roadDS.interIdToInboudRoadListDict[nextDepthInterID]:
-                            if nextFromRoad.roadId == self.roadDS.roadDict[fromRoadID].getOppositRoad().roadId:
+                targetVehicleTupleList = [(v, 1) for v in self.vehicleDS.getSortedVehicleList(fromRoad.roadId, nextRoad.roadId)]
+
+                # scan one hop deeper
+                nextDepthInterID = self.roadDS.roadDict[fromRoad.roadId].getStartInterId()
+                for nextFromRoad in self.roadDS.interIdToInboudRoadListDict[nextDepthInterID]:
+                    if nextFromRoad.roadId == self.roadDS.roadDict[fromRoad.roadId].getOppositRoad().roadId:
+                        continue
+
+                    vehicles = self.vehicleDS.getSortedVehicleList(nextFromRoad.roadId, fromRoad.roadId)
+                    if len(vehicles) == 0:
+                        continue
+
+                    nextDepthInter = self.interDict[nextDepthInterID]
+                    if nextDepthInter.signal:
+                        for v in vehicles:
+                            targetVehicleTupleList.append((v, 1))
+
+                    else:
+                        vehicleVectors = [np.array([nextDepthInter.x-self.spawnInters[v.vehicleId].x,
+                                          nextDepthInter.y-self.spawnInters[v.vehicleId].y]) for v in vehicles]
+                        outCandidates = []
+                        fromRoadIndex = 0
+                        for outRoad in self.roadDS.interIdToOutboudRoadListDict[nextDepthInterID]:
+                            if outRoad.roadId == self.roadDS.roadDict[nextFromRoad.roadId].getOppositRoad().roadId:
                                 continue
-                            if (nextDepthInterID in self.signalDict.keys()) and (scanInterID in self.signalDict.keys()):
-                                nextFromRoadDir, _ = self.signalDict[nextDepthInterID].solveDirection(nextFromRoad.roadId)
-                                toRoadDir, _ = self.signalDict[scanInterID].solveDirection(toRoadID)
-                                if nextFromRoadDir == toRoadDir:
-                                    continue
-                                    
-                            directionMap={"N":0,"E":1,"S":2,"W":3}
-                            fromRoadDir, _ = self.signalDict[scanInterID].solveDirection(fromRoadID)
-                            def _calcWeight(roadObj):
-                                roadObjDir, _ = self.signalDict[scanInterID].solveDirection(roadObj.roadId)
-                                if self.roadDS.roadDict[fromRoadID].getOppositRoad().roadId != roadObj.roadId:
-                                    return 0
-                                elif (directionMap[fromRoadDir] - directionMap[roadObjDir])%2:
-                                    return 3
-                                else:
-                                    return 1
-                                    
-                            nextToRoadDirCandidates = {
-                                roadObj.roadId:_calcWeight(roadObj) for roadObj in self.roadDS.interIdToOutboudRoadListDict[scanInterID]
-                            }
-                            
-                            nextProb = prob*nextToRoadDirCandidates[toRoadID]/sum(nextToRoadDirCandidates.values())
-                            
-                            scanRouteInfo[d+1].append((nextFromRoad.roadId, nextDepthInterID, fromRoadID, nextProb))
-                            
-                yield targetVehicleListTuple,(current_direction,next_direction)
+                            elif outRoad.roadId == fromRoad:
+                                fromRoadIndex = len(outCandidates)
+                            endInter = self.interDict[outRoad.getEndInterId()]
+                            outCandidates.append((outRoad, np.array([endInter.x-nextDepthInter.x, endInter.y-nextDepthInter.y])))
+
+                        for v, v_vec in zip(vehicles, vehicleVectors):
+                            similarity = [cosine_similarity(v_vec, out[1])+0.5 for out in outCandidates]
+                            if similarity[fromRoadIndex] > 0:
+                                s = sum([s for s in similarity if s > 0])
+                                targetVehicleTupleList.append((v, similarity[fromRoadIndex]/s))
+                yield targetVehicleTupleList, (current_direction,next_direction)
     
     def createPhaseToRunDistanceDict(self,
             interId,
@@ -308,12 +309,12 @@ class RoadTracer():
         }
         
         #for targetVehicleList,directions in self.iterateTimeTargetVehicleList(interId,limit_time):####
-        for targetVehicleListTuple,directions in self.iterateTimeTargetVehicleListTuple(interId,limit_time,depth):####
+        for targetVehicleTupleList,directions in self.iterateTimeTargetVehicleListTuple(interId,limit_time,depth):####
             for focusedSignalAssumedState in runDistanceDict:
                 #runDistanceDict[focusedSignalAssumedState][directions]=self._calcRunningRouteDistanceForVehicelList(####
-                runDistanceDict[focusedSignalAssumedState][directions]=self._calcRunningRouteDistanceForVehicelListTuple(####
+                runDistanceDict[focusedSignalAssumedState][directions]=self._calcRunningRouteDistanceForVehicleTupleList(####
                     #targetVehicleList,####
-                    targetVehicleListTuple,####
+                    targetVehicleTupleList,####
                     limit_time,
                     interId,
                     focusedSignalAssumedState,
@@ -433,8 +434,8 @@ class RoadTracer():
         return sum_run_distance
     
     ####
-    def _calcRunningRouteDistanceForVehicelListTuple(self,
-            vehicleListTuple,
+    def _calcRunningRouteDistanceForVehicleTupleList(self,
+            vehicleTupleList,
             limit_time,
             focusedSignalizedInterId,
             focusedSignalAssumedState,
@@ -443,18 +444,17 @@ class RoadTracer():
         ):
         
         sum_run_distance=0
-        for vehicleList, prob in vehicleListTuple:
-            for vehicle in vehicleList:
-                run_distance,inter_archived=self._calcRunningRouteDistance(
-                    vehicle,
-                    limit_time,
-                    focusedSignalizedInterId,
-                    focusedSignalAssumedState,
-                    prohibitDecreasingGoalDistance=prohibitDecreasingGoalDistance,
-                    prohibitDecreasingSpeed=prohibitDecreasingSpeed
-                )
-                if inter_archived:
-                    sum_run_distance+=run_distance*prob
+        for vehicle, prob in vehicleTupleList:
+            run_distance,inter_archived=self._calcRunningRouteDistance(
+                vehicle,
+                limit_time,
+                focusedSignalizedInterId,
+                focusedSignalAssumedState,
+                prohibitDecreasingGoalDistance=prohibitDecreasingGoalDistance,
+                prohibitDecreasingSpeed=prohibitDecreasingSpeed
+            )
+            if inter_archived:
+                sum_run_distance+=run_distance*prob
         return sum_run_distance
         
     def _calcRunningRouteDistance(self,

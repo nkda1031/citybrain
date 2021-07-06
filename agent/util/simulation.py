@@ -220,7 +220,8 @@ class BridgeAgent():
         self.agent_list = list(map(int, agent_list))
         self.actionSolver.startEpisode(self.agent_list)
     def load_roadnet(self,intersections, roads, agents):
-        self.roadNet=RoadNet.createFromProcessRoadNet(intersections, roads, agents)
+        # self.roadNet=RoadNet.createFromProcessRoadNet(intersections, roads, agents)
+        self.roadNet=RoadNet.createFromRoadNetFile('data/roadnet_round3.txt') # matsushima: use (x, y) of intersections
         self.actionSolver.setRoadNet(self.roadNet)
     ################################
     def act(self, obs):
